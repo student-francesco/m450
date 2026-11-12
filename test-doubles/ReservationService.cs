@@ -12,6 +12,9 @@ public interface IReservationRepository
 {
     // Gibt false zurück, wenn die Reservierung nicht gespeichert werden konnte.
     bool TrySave(Reservation reservation);
+
+    // Gibt false zurück, wenn nicht alle Reservierungen gespeichert werden konnten.
+    bool TrySaveBatch(IReadOnlyList<Reservation> reservations);
 }
 
 public interface IConfirmationSender
@@ -64,6 +67,79 @@ public sealed class ReservationService
         }
 
         _sender.Send(reservation);
+        return true;
+    }
+
+    public bool ReserveBatch(IReadOnlyList<Reservation> requests)
+    {
+        if (requests is null)
+        {
+            throw new ArgumentNullException(nameof(requests));
+        }
+
+        if (requests.Count == 0)
+        {
+            throw new ArgumentException("Mindestens eine Reservierung ist erforderlich.", nameof(requests));
+        }
+
+        foreach (var request in requests)
+        {
+            if (request is null)
+            {
+                throw new ArgumentException("Eine Reservierung darf nicht null sein.", nameof(requests));
+            }
+
+            if (string.IsNullOrWhiteSpace(request.CustomerEmail))
+            {
+                throw new ArgumentException(
+                    "Eine E-Mail-Adresse ist erforderlich.",
+                    nameof(request.CustomerEmail));
+            }
+
+            if (string.IsNullOrWhiteSpace(request.EventCode))
+            {
+                throw new ArgumentException(
+                    "Ein Veranstaltungscode ist erforderlich.",
+                    nameof(request.EventCode));
+            }
+
+            if (request.SeatCount <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(request.SeatCount));
+            }
+        }
+
+        var requestedSeatsByEvent = new Dictionary<string, int>();
+        foreach (var request in requests)
+        {
+            requestedSeatsByEvent.TryGetValue(request.EventCode, out var alreadyRequested);
+            requestedSeatsByEvent[request.EventCode] = alreadyRequested + request.SeatCount;
+        }
+
+        var insufficientSeats = false;
+        foreach (var (eventCode, requestedSeats) in requestedSeatsByEvent)
+        {
+            if (_availability.GetAvailableSeats(eventCode) < requestedSeats)
+            {
+                insufficientSeats = true;
+            }
+        }
+
+        if (insufficientSeats)
+        {
+            return false;
+        }
+
+        if (!_repository.TrySaveBatch(requests))
+        {
+            return false;
+        }
+
+        foreach (var request in requests)
+        {
+            _sender.Send(request);
+        }
+
         return true;
     }
 }
